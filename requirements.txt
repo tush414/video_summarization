@@ -1,0 +1,6 @@
+streamlit
+openai
+langchain
+yt-dlp
+reportlab
+markdown2
