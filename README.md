@@ -1,6 +1,6 @@
 # 🧠 Exam Note Summarizer (Detailed) — with Semantic Search
 
-> 🎥 Turn YouTube lectures and playlists into **exam-ready detailed notes**, **flashcards**, and **semantic searchable study material** using GPT + embeddings.
+Turn YouTube lectures and playlists into **exam-ready detailed notes**, **flashcards**, and **semantic searchable study material** using GPT + embeddings.
 
 ---
 
@@ -15,35 +15,6 @@
 ✅ **Semantic Search** — Ask natural questions across all your notes using embeddings.  
 ✅ **GPT-Powered Answers** — Synthesizes relevant answers from your indexed notes.  
 ✅ **Streamlit Frontend** — Simple, modern web interface.
-
----
-
-## 🧩 Architecture Overview
-
-```
-YouTube / Playlist
-     │
-     ▼
-[ yt-dlp ]  →  Captions (.vtt)
-     │
-     ▼
-[ Transcript Parser + LangChain Splitter ]
-     │
-     ▼
-[ OpenAI GPT Model ]
-   ├── Compact Summary
-   ├── Detailed Notes
-   └── Flashcards
-     │
-     ▼
-[ Markdown + PDF Export ]
-     │
-     ▼
-[ Embeddings + Semantic Index ]
-     │
-     ▼
-[ Streamlit UI: Semantic Search + GPT Answers ]
-```
 
 ---
 
