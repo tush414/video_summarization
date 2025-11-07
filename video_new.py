@@ -1,36 +1,36 @@
 """
-Exam Note Summarizer — YouTube / Playlist (Detailed Notes + Flashcards)
-✅ Supports single videos and playlists
-✅ Detailed notes (~6000-9000 words)
-✅ Flashcards generation
-✅ Per-video download
-✅ Streamlit frontend
-✅ Convert Markdown to PDF (without flashcards)
+Enhanced Exam Note Summarizer with Semantic Search
+- Uses OpenAI embeddings to index generated notes
+- In-memory index with optional disk persistence
+- Cosine similarity search & GPT-based synthesized answers
 """
 
 import os
 import re
 import math
+import json
 import tempfile
 import subprocess
-import json
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Any
 from pathlib import Path
 from io import BytesIO
 
 import streamlit as st
+import markdown2
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.docstore.document import Document
 from openai import OpenAI
 
-# --- For PDF conversion ---
+# PDF libs
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, KeepTogether
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.units import inch
-import markdown2
 
-# ------------------ Helpers ------------------
+# Numerical processing
+import numpy as np
+
+# ------------------ Helpers (timestamps, VTT parsing, captions) ------------------
 
 def strip_timestamps(text: str) -> str:
     text = re.sub(r'\[\d{1,2}:\d{2}(?::\d{2})?\]', '', text)
@@ -42,7 +42,7 @@ def strip_timestamps(text: str) -> str:
 def format_timestamp(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
     h, m = divmod(m, 60)
-    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+    return f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}:{s:02d}"
 
 def vtt_timestamp_to_seconds(ts: str) -> float:
     try:
@@ -200,10 +200,6 @@ def expand_into_detailed_notes(summary: str, client: OpenAI, total_target_words:
 # ------------------ Markdown → PDF (reportlab) ------------------
 
 def markdown_to_pdf(md_text: str) -> BytesIO:
-    """
-    Convert markdown text (ignoring flashcards) to PDF using reportlab.
-    Returns BytesIO object.
-    """
     md_no_flashcards = re.split(r'### Flashcards', md_text)[0]
     html_text = markdown2.markdown(md_no_flashcards, extras=["fenced-code-blocks"])
 
@@ -240,27 +236,112 @@ def markdown_to_pdf(md_text: str) -> BytesIO:
     buffer.seek(0)
     return buffer
 
+# ------------------ Semantic Search: Embedding + Indexing ------------------
+
+def embed_texts(texts: List[str], client: OpenAI, model="text-embedding-3-small") -> List[List[float]]:
+    """
+    Embed texts one-by-one (simple loop). Returns list of embedding vectors.
+    """
+    embs = []
+    for t in texts:
+        resp = client.embeddings.create(model=model, input=t)
+        embs.append(resp.data[0].embedding)
+    return embs
+
+def build_semantic_index(notes_dict: Dict[str, Any], client: OpenAI, embed_model="text-embedding-3-small",
+                         chunk_size:int=800, chunk_overlap:int=100) -> List[Dict[str, Any]]:
+    """
+    Build an in-memory semantic index from session processed notes.
+    Returns a list of dicts with keys: text, embedding (np.array), title, source_url
+    """
+    index = []
+    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+    for video_url, data in notes_dict.items():
+        text = data["markdown"]
+        title = data.get("title", "Untitled")
+        chunks = splitter.split_text(text)
+        # embed in batches (or individually)
+        embeddings = embed_texts(chunks, client, model=embed_model)
+        for chunk, emb in zip(chunks, embeddings):
+            index.append({
+                "text": chunk,
+                "embedding": np.array(emb, dtype=np.float32),
+                "title": title,
+                "source_url": video_url
+            })
+    return index
+
+def cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
+    if np.linalg.norm(a) == 0 or np.linalg.norm(b) == 0:
+        return 0.0
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+def semantic_search(query: str, index: List[Dict[str, Any]], client: OpenAI, embed_model="text-embedding-3-small", top_k:int=5):
+    q_emb = np.array(client.embeddings.create(model=embed_model, input=query).data[0].embedding, dtype=np.float32)
+    sims = [cosine_sim(q_emb, entry['embedding']) for entry in index]
+    ranked_idx = np.argsort(sims)[-top_k:][::-1]
+    results = []
+    for i in ranked_idx:
+        results.append({
+            "text": index[i]['text'],
+            "title": index[i]['title'],
+            "source_url": index[i]['source_url'],
+            "score": sims[i]
+        })
+    return results
+
+def save_index_to_file(index: List[Dict[str, Any]], path: str):
+    serial = []
+    for e in index:
+        serial.append({
+            "text": e["text"],
+            "title": e["title"],
+            "source_url": e["source_url"],
+            "embedding": e["embedding"].tolist()
+        })
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(serial, fh)
+
+def load_index_from_file(path: str) -> List[Dict[str, Any]]:
+    with open(path, "r", encoding="utf-8") as fh:
+        raw = json.load(fh)
+    out = []
+    for e in raw:
+        out.append({
+            "text": e["text"],
+            "title": e["title"],
+            "source_url": e["source_url"],
+            "embedding": np.array(e["embedding"], dtype=np.float32)
+        })
+    return out
+
 # ------------------ Streamlit UI ------------------
 
-st.set_page_config(page_title="Exam Note Summarizer (Detailed)", layout="wide")
-st.title("📘 Youtube Video - Exam Summarizer")
+st.set_page_config(page_title="Exam Note Summarizer", layout="wide")
+st.title("📘 Youtube Exam Note Summarizer with Semantic Search")
 
 st.sidebar.header("Settings")
 api_key = st.sidebar.text_input("🔑 OpenAI API Key", type="password")
-model_choice = st.sidebar.text_input("Model name (e.g., gpt-4o-mini)", value="gpt-4o-mini")
+model_choice = st.sidebar.text_input("Model name (chat) (e.g., gpt-4o-mini)", value="gpt-4o-mini")
+embed_model_choice = st.sidebar.text_input("Embedding model (e.g., text-embedding-3-small)", value="text-embedding-3-small")
 playlist_mode = st.sidebar.checkbox("Playlist Mode", value=False)
 auto_detect_playlist = st.sidebar.checkbox("Auto-detect playlist URLs", value=True)
 generate_flashcards = st.sidebar.checkbox("Generate flashcards", value=True)
-target_words = st.sidebar.slider("Detailed section target words", min_value=6000, max_value=9000, value=7000, step=100)
+target_words = st.sidebar.slider("Detailed notes total target words", min_value=3000, max_value=9000, value=7000, step=100)
+auto_build_index = st.sidebar.checkbox("Auto-build semantic index after generation", value=True)
 
 youtube_url = st.text_input("🎥 Enter YouTube Video or Playlist URL")
 run_button = st.button("Generate Exam Notes")
 
-# --- Session state for caching ---
+# Session state
 if "processed_notes" not in st.session_state:
     st.session_state.processed_notes = {}
+if "semantic_index" not in st.session_state:
+    st.session_state.semantic_index = None
+if "index_path" not in st.session_state:
+    st.session_state.index_path = None
 
-# --- Processing ---
+# Main processing
 if run_button:
     if not api_key:
         st.error("Please provide your OpenAI API key in the sidebar.")
@@ -269,10 +350,13 @@ if run_button:
     client = OpenAI(api_key=api_key)
 
     try:
-        if playlist_mode or (auto_detect_playlist and 'playlist' in (youtube_url or '')):
+        if playlist_mode or (auto_detect_playlist and youtube_url and 'playlist' in youtube_url):
             st.info("Detected playlist URL — fetching all video links...")
             urls = list_videos_in_playlist(youtube_url)
         else:
+            if not youtube_url:
+                st.error("Please enter a YouTube URL or ID.")
+                st.stop()
             urls = [(youtube_url, 'Single Video')]
     except Exception as e:
         st.error(f"Failed to list playlist videos: {e}")
@@ -280,10 +364,12 @@ if run_button:
 
     progress = st.progress(0)
     total_videos = len(urls)
+    client_for_index = OpenAI(api_key=api_key)  # separate reference for embedding/search
 
     for i, (url, title) in enumerate(urls, 1):
         if url in st.session_state.processed_notes:
             st.info(f"✅ Skipping already processed video: {title}")
+            progress.progress(i / total_videos)
             continue
 
         st.write(f"### ▶ Processing ({i}/{total_videos}): {title}")
@@ -294,15 +380,15 @@ if run_button:
             continue
 
         docs = build_documents_from_transcript(transcript_ts)
-        compact_summary = summarize_documents_chunkwise(docs, client, model=model_choice)
+        compact_summary = summarize_documents_chunkwise(docs, client_for_index, model=model_choice)
 
         st.info(f"Generating detailed notes (~{target_words} words)...")
-        detailed_notes = expand_into_detailed_notes(compact_summary, client, total_target_words=target_words, model=model_choice)
+        detailed_notes = expand_into_detailed_notes(compact_summary, client_for_index, total_target_words=target_words, model=model_choice)
 
         flashcards_md = ""
         if generate_flashcards:
             try:
-                fc_resp = client.chat.completions.create(
+                fc_resp = client_for_index.chat.completions.create(
                     model=model_choice,
                     messages=[
                         {"role":"system","content":"Generate concise flashcards from lecture summaries."},
@@ -341,11 +427,19 @@ if run_button:
         progress.progress(i / total_videos)
         st.divider()
 
+    # Auto-build index if selected
+    if auto_build_index:
+        try:
+            with st.spinner("Building semantic index..."):
+                st.session_state.semantic_index = build_semantic_index(st.session_state.processed_notes, client_for_index, embed_model=embed_model_choice)
+            st.success("Semantic index built!")
+        except Exception as e:
+            st.error(f"Failed to build semantic index: {e}")
+
 # --- Render download buttons ---
 if st.session_state.processed_notes:
     st.subheader("📥 Download Your Notes")
     for url, data in st.session_state.processed_notes.items():
-        # Markdown download
         st.download_button(
             label=f"Download Notes for '{data['title']}'",
             data=data["markdown"],
@@ -353,7 +447,6 @@ if st.session_state.processed_notes:
             mime="text/markdown",
             key=f"download_{url}"
         )
-        # PDF download (ignoring flashcards)
         pdf_buffer = markdown_to_pdf(data["markdown"])
         st.download_button(
             label=f"Download PDF for '{data['title']}'",
@@ -363,4 +456,93 @@ if st.session_state.processed_notes:
             key=f"pdf_{url}"
         )
 
-st.success("✅ All processed videos are available for download above.")
+# --- Semantic Search Controls ---
+st.markdown("---")
+st.subheader("🔍 Semantic Search")
+
+if not api_key:
+    st.info("Provide OpenAI API key in the sidebar to use semantic search.")
+else:
+    client = OpenAI(api_key=api_key)
+
+    col1, col2 = st.columns([2,1])
+    with col1:
+        if st.session_state.semantic_index is None:
+            if st.button("Build Semantic Index Now"):
+                try:
+                    with st.spinner("Building semantic index..."):
+                        st.session_state.semantic_index = build_semantic_index(st.session_state.processed_notes, client, embed_model=embed_model_choice)
+                        # default path
+                        tmp_index_path = os.path.join(tempfile.gettempdir(), "semantic_index.json")
+                        st.session_state.index_path = tmp_index_path
+                    st.success("Semantic index built and stored in session.")
+                except Exception as e:
+                    st.error(f"Failed to build index: {e}")
+        else:
+            st.success(f"Semantic index ready — {len(st.session_state.semantic_index)} chunks indexed.")
+
+    with col2:
+        st.write("Index persistence")
+        if st.session_state.semantic_index:
+            if st.button("💾 Save Index to disk"):
+                try:
+                    path = st.text_input("Path to save index", value=os.path.join(tempfile.gettempdir(), "semantic_index.json"))
+                    if path:
+                        save_index_to_file(st.session_state.semantic_index, path)
+                        st.session_state.index_path = path
+                        st.success(f"Index saved to {path}")
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+        upload = st.file_uploader("📂 Load index file (JSON)", type=["json"])
+        if upload is not None:
+            try:
+                # read uploaded file and load index
+                tmp_path = os.path.join(tempfile.gettempdir(), f"uploaded_index_{os.getpid()}.json")
+                with open(tmp_path, "wb") as fh:
+                    fh.write(upload.getbuffer())
+                st.session_state.semantic_index = load_index_from_file(tmp_path)
+                st.session_state.index_path = tmp_path
+                st.success("Index loaded from uploaded file.")
+            except Exception as e:
+                st.error(f"Load failed: {e}")
+
+    # Search UI
+    if st.session_state.semantic_index:
+        query = st.text_input("Ask a question about your notes:")
+        top_k = st.slider("Top K results", min_value=1, max_value=10, value=5)
+        use_gpt_answer = st.checkbox("Return synthesized answer (GPT)", value=True)
+        if st.button("Search Notes") and query.strip():
+            try:
+                with st.spinner("Searching..."):
+                    results = semantic_search(query, st.session_state.semantic_index, client, embed_model=embed_model_choice, top_k=top_k)
+                st.write("### Top Results")
+                for r in results:
+                    st.markdown(f"**{r['title']}** — Similarity: `{r['score']:.3f}`")
+                    st.markdown(r['text'][:1000] + ("..." if len(r['text'])>1000 else ""))
+                    st.markdown(f"[Open source video]({r['source_url']})")
+                    st.divider()
+
+                if use_gpt_answer:
+                    # Concatenate top chunks (be cautious about length)
+                    top_texts = "\n\n".join([r['text'] for r in results])
+                    prompt = (
+                        f"Answer the user question using only the relevant extracted note chunks below. Use concise, exam-ready language. "
+                        f"If the information is not present, say you couldn't find it in the notes.\n\n"
+                        f"Question: {query}\n\nRelevant note chunks:\n{top_texts}\n\nAnswer:"
+                    )
+                    with st.spinner("Synthesizing answer via GPT..."):
+                        ans_resp = client.chat.completions.create(
+                            model=model_choice,
+                            messages=[{"role":"user","content": prompt}],
+                            temperature=0.2
+                        )
+                    answer = ans_resp.choices[0].message.content.strip()
+                    st.write("### Synthesized Answer")
+                    st.write(answer)
+            except Exception as e:
+                st.error(f"Search failed: {e}")
+    else:
+        st.info("No semantic index available yet. Build the index first (above) or generate notes first.")
+
+st.markdown("---")
+st.success("✅ App loaded. Generate notes, build the semantic index, then search your notes!")
