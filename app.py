@@ -18,7 +18,7 @@ from io import BytesIO
 import streamlit as st
 import markdown2
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.docstore.document import Document
+from langchain_core.documents import Document
 from openai import OpenAI
 
 # PDF libs
