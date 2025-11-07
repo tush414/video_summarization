@@ -61,7 +61,7 @@ export OPENAI_API_KEY="your_api_key_here"
 ## 🚀 Run the App
 
 ```bash
-streamlit run exam_note_summarizer.py
+streamlit run app.py
 ```
 
 Then open [http://localhost:8501](http://localhost:8501).
@@ -107,10 +107,9 @@ Then open [http://localhost:8501](http://localhost:8501).
 ```
 exam-note-summarizer/
 │
-├── exam_note_summarizer.py      # Main Streamlit app
+├── app.py      # Main Streamlit app
 ├── requirements.txt             # Dependencies
 ├── README.md                    # Documentation
-└── data/                        # (Optional) saved indexes, transcripts, PDFs
 ```
 
 ---
