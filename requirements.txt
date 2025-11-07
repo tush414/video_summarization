@@ -1,9 +1,9 @@
 streamlit>=1.38.0
 openai>=1.51.0
 langchain>=0.3.0
-langchain-core>=0.3.11
+langchain-core>=0.3.79
 langchain-community>=0.3.4
-langchain-text-splitters>=0.3.0
+langchain-text-splitters>=0.3.11
 markdown2>=2.4.13
 reportlab>=4.2.0
 yt-dlp>=2025.1.1
