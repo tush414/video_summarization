@@ -61,7 +61,7 @@ export OPENAI_API_KEY="your_api_key_here"
 ## 🚀 Run the App
 
 ```bash
-streamlit run exam_note_summarizer.py
+streamlit run app.py
 ```
 
 Then open [http://localhost:8501](http://localhost:8501).
