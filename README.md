@@ -107,10 +107,9 @@ Then open [http://localhost:8501](http://localhost:8501).
 ```
 exam-note-summarizer/
 │
-├── exam_note_summarizer.py      # Main Streamlit app
+├── app.py      # Main Streamlit app
 ├── requirements.txt             # Dependencies
 ├── README.md                    # Documentation
-└── data/                        # (Optional) saved indexes, transcripts, PDFs
 ```
 
 ---
